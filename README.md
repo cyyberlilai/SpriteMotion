@@ -1,5 +1,7 @@
 # SpriteMotion
 
+🚀 **Live Demo:** [https://spritemotion.framesecond.uk/](https://spritemotion.framesecond.uk/)
+
 SpriteMotion is a powerful, browser-based tool built with React and Vite for processing, analyzing, and animating sprite sheets. Designed for game developers and digital artists, it allows you to easily slice sprite sheets into individual frames, apply smart transparency, align sprites, and export them as animated GIFs or individual image sequences.
 
 ## 🚀 Features
@@ -48,7 +50,7 @@ Make sure you have [Node.js](https://nodejs.org/) installed.
    npm run dev
    ```
 
-5. Open your browser and navigate to the local URL provided by Vite (usually `http://localhost:5173`).
+5. Open your browser and navigate to the local URL provided by Vite (usually `http://localhost:3000`).
 
 ## 🎮 How to Use
 
