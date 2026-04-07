@@ -32,7 +32,7 @@ Make sure you have [Node.js](https://nodejs.org/) installed.
 
 1. Navigate to the project directory:
    ```bash
-   cd SpriteMotion-main
+   cd SpriteMotion
    ```
 
 2. Install the dependencies:
