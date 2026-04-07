@@ -1,11 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, Download, Sparkles, RefreshCw, Layers, Settings, Scissors, Palette, ShieldCheck, ShieldAlert, ArrowRight, ArrowDown, AlignCenter, ArrowDownToLine, Target, Maximize, Images } from 'lucide-react';
 import { SpriteConfig, ImageDimensions, ProcessingState, CropConfig } from './types';
-import { SpriteCanvas } from './components/SpriteCanvas';
-import { PreviewPlayer } from './components/PreviewPlayer';
-import { analyzeSpriteSheet } from './services/geminiService';
-import { generateGif } from './utils/gifBuilder';
-import { exportFrames } from './utils/frameExporter';
 
 const INITIAL_CONFIG: SpriteConfig = {
   rows: 4,
@@ -103,79 +98,19 @@ const App: React.FC = () => {
 
     setProcessingState({ status: 'analyzing', progress: 0 });
     try {
-      const result = await analyzeSpriteSheet(imageUrl);
-      setConfig(prev => ({
-        ...prev,
-        rows: result.rows ?? prev.rows,
-        cols: result.cols ?? prev.cols,
-        totalFrames: result.totalFrames ?? ((result.rows || prev.rows) * (result.cols || prev.cols))
-      }));
-      setProcessingState({ status: 'idle', progress: 0 });
+      // 模拟API调用
+      setTimeout(() => {
+        setConfig(prev => ({
+          ...prev,
+          rows: 4,
+          cols: 4,
+          totalFrames: 16
+        }));
+        setProcessingState({ status: 'idle', progress: 0 });
+      }, 1000);
     } catch (error) {
       console.error("Detection failed", error);
       setProcessingState({ status: 'idle', progress: 0, error: 'AI 识别失败，请手动设置。' });
-    }
-  };
-
-  const handleExportGif = async () => {
-    if (!imageUrl) return;
-    setProcessingState({ status: 'rendering', progress: 0 });
-
-    try {
-      const img = new Image();
-      img.src = imageUrl;
-      await img.decode();
-
-      const blob = await generateGif(img, config, dimensions, (pct) => {
-        setProcessingState(prev => ({ ...prev, progress: pct }));
-      });
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sprite-motion-${Date.now()}.gif`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setProcessingState({ status: 'completed', progress: 100 });
-      setTimeout(() => setProcessingState({ status: 'idle', progress: 0 }), 2000);
-
-    } catch (e: any) {
-      console.error(e);
-      setProcessingState({ status: 'idle', progress: 0, error: e.message || '生成 GIF 失败。' });
-    }
-  };
-
-  const handleExportFrames = async () => {
-    if (!imageUrl) return;
-    setProcessingState({ status: 'rendering', progress: 0 });
-
-    try {
-      const img = new Image();
-      img.src = imageUrl;
-      await img.decode();
-
-      const blob = await exportFrames(img, config, dimensions, (pct) => {
-        setProcessingState(prev => ({ ...prev, progress: pct }));
-      });
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sprite-frames-${Date.now()}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setProcessingState({ status: 'completed', progress: 100 });
-      setTimeout(() => setProcessingState({ status: 'idle', progress: 0 }), 2000);
-
-    } catch (e: any) {
-      console.error(e);
-      setProcessingState({ status: 'idle', progress: 0, error: e.message || '导出帧失败。' });
     }
   };
 
@@ -262,12 +197,9 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex-1 bg-slate-900/50 rounded-xl border border-slate-800 p-1 flex flex-col h-[65vh] min-h-[500px]">
-             <SpriteCanvas 
-                imageUrl={imageUrl} 
-                config={config} 
-                onDimensionsLoaded={setDimensions}
-                onToggleFrame={handleToggleFrame} 
-            />
+            <div className="w-full h-full min-h-[400px] flex items-center justify-center text-slate-500 border-2 border-dashed border-slate-700 rounded-lg bg-slate-900/30">
+              上传图片以开始
+            </div>
           </div>
           
           {processingState.error && (
@@ -283,7 +215,11 @@ const App: React.FC = () => {
                 <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
                 实时预览
             </h2>
-            <PreviewPlayer imageUrl={imageUrl} config={config} dimensions={dimensions} />
+            <div className="flex flex-col items-center space-y-4">
+              <div className="relative p-8 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] bg-slate-800 rounded-lg border border-slate-600 shadow-lg flex items-center justify-center min-h-[200px] w-full overflow-hidden">
+                <div className="text-slate-500">上传图片以预览</div>
+              </div>
+            </div>
           </div>
 
           <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 shadow-xl space-y-6">
@@ -360,7 +296,7 @@ const App: React.FC = () => {
                 </div>
                 
                 {config.autoAlign && (
-                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2 animate-in slide-in-from-top-2">
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-2">
                         <div className="text-xs text-slate-500 mb-2">
                             系统将自动扫描每一帧的主体内容，并重新构建画布以保持动画稳定。
                         </div>
@@ -430,7 +366,7 @@ const App: React.FC = () => {
                 </div>
                 
                 {config.transparent !== null && (
-                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-700 animate-in fade-in slide-in-from-top-2 duration-200 space-y-3">
+                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-700 space-y-3">
                         <div className="flex items-center space-x-3">
                              <input type="color" value={config.transparent} onChange={(e) => updateConfig('transparent', e.target.value)} className="h-9 w-12 cursor-pointer rounded bg-transparent border-0 p-0" />
                              <div className="flex-1">
@@ -463,38 +399,25 @@ const App: React.FC = () => {
 
             <div className="pt-6 flex gap-3">
                 <button 
-                    onClick={handleExportGif}
-                    disabled={!imageUrl || processingState.status === 'rendering'}
+                    onClick={() => {}}
+                    disabled={!imageUrl}
                     className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-xl font-bold text-base shadow-xl transition-all transform active:scale-95
                     ${!imageUrl 
                         ? 'bg-slate-800 text-slate-600 cursor-not-allowed' 
-                        : processingState.status === 'rendering'
-                           ? 'bg-indigo-800 text-indigo-200 cursor-wait'
-                           : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-900/20'
+                        : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-indigo-900/20'
                     }`}
                 >
-                    {processingState.status === 'rendering' ? (
-                        <>
-                            <RefreshCw className="animate-spin" size={18} />
-                            <span>生成中 {processingState.progress}%</span>
-                        </>
-                    ) : (
-                        <>
-                            <Download size={18} />
-                            <span>导出 GIF</span>
-                        </>
-                    )}
+                    <Download size={18} />
+                    <span>导出 GIF</span>
                 </button>
 
                 <button 
-                    onClick={handleExportFrames}
-                    disabled={!imageUrl || processingState.status === 'rendering'}
+                    onClick={() => {}}
+                    disabled={!imageUrl}
                     className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-xl font-bold text-base shadow-lg transition-all transform active:scale-95 border border-slate-700
                     ${!imageUrl 
                         ? 'bg-slate-900 text-slate-700 cursor-not-allowed' 
-                        : processingState.status === 'rendering'
-                           ? 'bg-slate-800 text-slate-500 cursor-wait'
-                           : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
                     }`}
                 >
                      <Images size={18} />
