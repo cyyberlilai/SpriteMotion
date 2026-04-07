@@ -164,7 +164,7 @@ const App: React.FC = () => {
           </div>
           
           <div className="flex items-center space-x-4">
-            <a href="https://github.com" target="_blank" rel="noreferrer" className="text-slate-400 hover:text-white transition-colors text-sm">Github</a>
+            <a href="https://github.com/cyyberlilai/SpriteMotion" target="_blank" rel="noreferrer" className="text-slate-400 hover:text-white transition-colors text-sm">Github</a>
             {process.env.API_KEY ? (
                <span className="px-2 py-1 rounded bg-green-900/30 text-green-400 text-xs border border-green-800">Gemini 已就绪</span>
             ) : (
