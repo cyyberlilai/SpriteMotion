@@ -1,0 +1,503 @@
+/* 自托管字体：Archivo 与 JetBrains Mono（拉丁子集可变字体，100-900 全覆盖）
+   两个文件共 68KB，替代原先 Google Fonts 的 4 次外部请求。 */
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/archivo.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 配色 token ────────────────────────────────────────────────────────
+   全站的「中性色 / 主色 / 抠除色 / 恢复色」只在这里定义一次。
+   格式必须是 "R G B" 三元组，否则 bg-indigo-500/15 这类透明度修饰会失效。
+   ──────────────────────────────────────────────────────────────────── */
+:root {
+  /* 中性层：石墨灰（微冷）。专业工作台的底色必须中性 ——
+     暖棕底会让长时间看图时，眼睛对边缘和白点的判断失真。
+     温度只留在光晕里，面板和文字保持干净。 */
+  --ink-50: 250 250 251;
+  --ink-100: 243 244 246;
+  --ink-200: 229 230 234;
+  --ink-300: 208 210 216;
+  --ink-400: 155 158 166;
+  --ink-500: 112 115 123;
+  --ink-600: 87 89 96;
+  --ink-700: 67 69 76;
+  --ink-800: 44 46 52;
+  --ink-900: 30 32 37;
+  --ink-950: 14 15 18;
+
+  --accent-50: 253 248 240;
+  --accent-100: 250 237 217;
+  --accent-200: 244 220 181;
+  --accent-300: 236 198 143;
+  --accent-400: 226 172 105;
+  --accent-500: 208 146 76;
+  --accent-600: 180 118 56;
+  --accent-700: 148 94 45;
+  --accent-800: 120 76 38;
+  --accent-900: 96 61 32;
+
+  --danger-300: 240 172 165;
+  --danger-400: 231 140 132;
+  --danger-500: 214 106 98;
+  --danger-600: 186 76 70;
+
+  --success-300: 158 200 176;
+  --success-400: 122 178 148;
+  --success-500: 92 155 124;
+  --success-600: 68 126 98;
+
+  /* 提示 / 警告：低饱和暖琥珀。替代原来 Tailwind 默认的亮黄，
+     亮黄在中性石墨底上会跳出来，抢主色的位置。 */
+  --warning-300: 240 206 138;
+  --warning-400: 222 178 96;
+  --warning-800: 108 78 32;
+  --warning-900: 74 52 22;
+
+  /* 画布「被误抠区域」的橙标记：和 canvas 实际画出来的 rgba(251,146,60) 同族，
+     文字描述也走同一组值，避免用 Tailwind 默认橙。 */
+  --orange-300: 253 186 116;
+  --orange-400: 251 146 60;
+}
+
+body {
+  background-color: rgb(var(--ink-950));
+}
+
+/* 主按钮：金色实心。上亮下暗的微弱渐变 + 顶部内高光 = 被打磨过的金属。
+   工作台主按钮不用文字阴影，字要实。 */
+.btn-accent {
+  background: linear-gradient(180deg, rgb(var(--accent-400)) 0%, rgb(var(--accent-500)) 55%, rgb(var(--accent-600)) 100%);
+  color: rgb(26 20 14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+    0 6px 18px -8px rgba(208, 146, 76, 0.55);
+}
+.btn-accent:hover {
+  filter: brightness(1.05) saturate(1.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 10px 26px -10px rgba(208, 146, 76, 0.7);
+}
+
+/* ══ 玻璃层（Apple vibrancy）══════════════════════════════════════════
+   玻璃要成立，三件事缺一不可：
+     1) 背后有内容可折射 —— body::before 的暖色光晕，不是纯色底；
+     2) 边缘有厚度 —— 顶部亮边 + 底部暗边 + 斜向光泽；
+     3) 状态有过渡 —— 弹窗打开时模糊度从 0 长出来，分段控件有滑动指示块。
+   只写 backdrop-filter 而背后是纯色，等于什么都没做。
+   ════════════════════════════════════════════════════════════════════ */
+
+/* 背景光晕：fixed 层，在内容之下。专业工作台不能有明显彩色氛围 ——
+   光晕只留极淡的一点点（7%~10%）且静止不动，作用只有一个：
+   让玻璃面板有东西可折射，边缘能看到轻微的明暗差。
+   漂移会分散注意力，所以动画关掉。 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -25%;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 36% at 14% 6%, rgba(206, 170, 120, 0.10), transparent 70%),
+    radial-gradient(38% 34% at 90% 90%, rgba(150, 140, 160, 0.08), transparent 70%),
+    radial-gradient(30% 26% at 86% 4%, rgba(120, 134, 156, 0.07), transparent 70%);
+}
+
+/* 面板：折射 + 厚度。白色叠加 13%、亮边 32%、底部暗边 30%，
+   数值比「保守耐看」更靠前一档 —— 玻璃感主要来自这三处，而不是 blur 半径。 */
+.glass {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.075) 0%, rgba(255, 255, 255, 0) 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.06) 100%);
+  backdrop-filter: blur(26px) saturate(180%) brightness(1.05);
+  -webkit-backdrop-filter: blur(26px) saturate(180%) brightness(1.05);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.30),
+    0 18px 44px -24px rgba(0, 0, 0, 0.85);
+}
+
+/* 嵌在面板里的卡片：再亮一档、边缘更亮、投影更短，像浮在玻璃里的磨砂片 */
+.glass-card {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 45%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.17) 0%, rgba(255, 255, 255, 0.08) 100%);
+  backdrop-filter: blur(20px) saturate(170%) brightness(1.06);
+  -webkit-backdrop-filter: blur(20px) saturate(170%) brightness(1.06);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.22),
+    0 12px 28px -18px rgba(0, 0, 0, 0.8);
+}
+
+/* 顶栏：最薄的一层玻璃，只做分隔，不抢内容 */
+.glass-header {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.045));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 24px -20px rgba(0, 0, 0, 0.9);
+}
+
+/* 悬浮感：所有可交互元素共用一条曲线 */
+.lift {
+  transition:
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 0.22s cubic-bezier(0.2, 0.8, 0.3, 1),
+    background-color 0.18s ease,
+    filter 0.18s ease;
+}
+.lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px -12px rgba(0, 0, 0, 0.8);
+}
+.lift:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 0.08s;
+}
+
+/* 主按钮的光泽扫过：hover 时一道斜光走过去，金属感来自「光在动」 */
+.btn-accent,
+.btn-brass {
+  position: relative;
+  overflow: hidden;
+}
+.btn-accent::after,
+.btn-brass::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -70%;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  transform: skewX(-18deg);
+  pointer-events: none;
+}
+.btn-accent:hover::after,
+.btn-brass:hover::after {
+  left: 130%;
+  transition: left 0.75s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* 次按钮：毛玻璃。边框亮、底极淡，靠模糊和边缘高光表达「实体」 */
+.btn-glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.05));
+  backdrop-filter: blur(18px) saturate(170%);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18);
+}
+.btn-glass:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.08));
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+/* 开关：轨道是凹陷的玻璃槽，滑块是带光泽的凸面 */
+.toggle-track {
+  background-image: linear-gradient(180deg, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0.06));
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.3),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+}
+.toggle-track::after {
+  background-image: linear-gradient(180deg, #ffffff, #e8e2d9);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.45),
+    0 0 0 0.5px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* 弹窗：先缩小沉在下面，再浮起归位（iOS 的标志性动效） */
+@keyframes modal-pop {
+  from { opacity: 0; transform: translateY(16px) scale(0.955); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-pop {
+  animation: modal-pop 0.36s cubic-bezier(0.22, 1.1, 0.32, 1);
+}
+
+/* 遮罩：透明度与模糊度一起长出来。这一条最像苹果 ——
+   背景是「逐渐被冻住」的，而不是瞬间变暗。 */
+.modal-backdrop {
+  animation: backdrop-in 0.38s cubic-bezier(0.22, 1.1, 0.32, 1) both;
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px) saturate(100%);
+    -webkit-backdrop-filter: blur(0px) saturate(100%);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.fade-in {
+  animation: fade-in 0.2s ease;
+}
+
+/* iOS 分段控件：凹陷轨道 + 会滑动的指示块。
+   指示块是 ::before，位置由容器上的 data-mode 决定；
+   两个按钮 flex:1 等宽，指示块才能精确对位。 */
+.seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+.seg::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 3px);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgb(var(--danger-400)), rgb(var(--danger-600)));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 2px 10px -3px rgba(0, 0, 0, 0.6);
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.25, 0.64, 1),
+    background 0.22s ease;
+}
+.seg[data-mode='restore']::before {
+  transform: translateX(calc(100% + 2px));
+  background: linear-gradient(180deg, rgb(var(--success-400)), rgb(var(--success-600)));
+}
+.seg-btn {
+  position: relative;
+  flex: 1;
+  border-radius: 8px;
+  background: transparent;
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.2s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.seg-btn:active {
+  transform: scale(0.96);
+  transition-duration: 0.08s;
+}
+.seg-btn-on-danger,
+.seg-btn-on-success {
+  color: #fff;
+  background: transparent;
+  box-shadow: none;
+}
+.seg-btn-off {
+  color: rgba(255, 255, 255, 0.45);
+  background: transparent;
+}
+.seg-btn-off:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* 玻璃胶囊（toast / 浮层提示）：比卡片更亮一档，是「更靠近用户」的第二层 */
+.glass-pill {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.08) 100%);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    0 14px 34px -16px rgba(0, 0, 0, 0.85);
+}
+
+/* 快捷键键帽：macOS 风格的凹键 */
+.kbd {
+  background: rgba(255, 255, 255, 0.075);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom-color: rgba(0, 0, 0, 0.3);
+  border-radius: 5px;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.22);
+}
+
+/* 看图区：中性深色棋盘格。这一层必须不透明 ——
+   否则背景光晕会透过玻璃进入预览区，影响对抠图边缘和透明底的判断。
+   玻璃只给「边框和工具」，不给「被查看的内容」。 */
+.checker {
+  background-color: #141414;
+  background-image:
+    linear-gradient(45deg, #1f1f1f 25%, transparent 25%, transparent 75%, #1f1f1f 75%),
+    linear-gradient(45deg, #1f1f1f 25%, transparent 25%, transparent 75%, #1f1f1f 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+}
+
+/* 数字类内容用表格数字，避免跳动 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 滑杆：轨道填充色由组件内联渐变提供（主色金），
+   这里统一轨道高度和滑块 —— 滑块用和开关 knob 同款的白色玻璃球，
+   全站所有「可拖动」的控件手感一致。 */
+/* 滑杆：input 本体做成 28px 高的透明热区（触屏好按），
+   视觉轨道仍然是 6px —— 用 background-size 把渐变压成中间一条线。
+   组件只传 --fill 百分比，金色填充和未填充段统一在这里画，配色只走 token。 */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 28px;
+  border-radius: 999px;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    rgb(var(--accent-500)) 0%,
+    rgb(var(--accent-500)) var(--fill, 0%),
+    rgb(var(--ink-700)) var(--fill, 0%),
+    rgb(var(--ink-700)) 100%
+  );
+  background-size: 100% 6px;
+  background-position: center;
+  background-repeat: no-repeat;
+  outline: none;
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff, #e8e4de);
+  border: none;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.45),
+    0 0 0 0.5px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+input[type='range']::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+input[type='range']::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff, #e8e4de);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+
+/* ── 基础层（从 index.html 内联样式迁来，全部改用统一 token）─────────────
+   以前这段写在 index.html 的 <style> 里，带一整套旧的靛蓝／深蓝配色，
+   而且和上面的 input[type=range] 规则互相覆盖，导致蓝色轨道清不掉。
+   现在 index.html 是纯骨架，配色只在 :root 一处定义。
+   ──────────────────────────────────────────────────────────────────── */
+html {
+  background-color: rgb(var(--ink-950));
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--ink-700)) transparent;
+}
+
+body {
+  color: rgb(var(--ink-200));
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+::selection {
+  background-color: rgb(var(--accent-500) / 0.4);
+  color: rgb(var(--ink-50));
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--accent-400));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 滚动条：轨道透明融进玻璃面板，滑块走中性灰阶，按下才透出香槟金 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--ink-700));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--ink-600));
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: rgb(var(--accent-500) / 0.55);
+}
+
+/* 数字输入框去掉原生上下箭头，避免和自绘控件打架 */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

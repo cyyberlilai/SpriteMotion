@@ -40,10 +40,34 @@ Make sure you have [Node.js](https://nodejs.org/) installed.
    npm install
    ```
 
-3. **(Optional)** If you want to use the AI Analysis feature, set up your Gemini API Key. Create a `.env.local` file in the root directory and add:
-   ```env
-   VITE_GEMINI_API_KEY=your_api_key_here
+3. **(Optional)** Configure the AI analysis feature (the "自动识别" / auto-detect button).
+   You can either fill in your key directly in the browser — click the **「AI 设置」** button in the top-right corner — or pre-set it for all users of this build via `.env.local`.
+
+   **Option A — fill in the browser (recommended for personal use):**
+   Click 「AI 设置」 in the header, pick a provider, and paste your API key. The key is stored in your browser's `localStorage` only — it never goes to any third-party server, and is sent directly to the chosen provider when you click 「自动识别」.
+
+   **JSON 模式 toggle:** sends `response_format: {"type":"json_object"}` to make the model return JSON directly. Some Coding Plan endpoints reject this parameter — if that happens the app automatically retries without it, so you usually don't need to touch this.
+
+   **Option B — pre-set via `.env.local` (for shared/deployed builds):**
+   ```bash
+   cp .env.example .env.local
    ```
+   Any **OpenAI-compatible** endpoint works. Built-in presets:
+
+   | `VITE_AI_PROVIDER` | Provider | Key env var | Default model |
+   |---|---|---|---|
+   | `gemini` | Google Gemini | `VITE_GEMINI_API_KEY` | `gemini-2.5-flash` |
+   | `openai` | OpenAI | `VITE_OPENAI_API_KEY` | `gpt-4o-mini` |
+   | `custom` | Any compatible endpoint | `VITE_AI_API_KEY` | you provide it |
+
+   Example — switch to OpenAI:
+   ```env
+   VITE_AI_PROVIDER=openai
+   VITE_OPENAI_API_KEY=your_key
+   ```
+   You can also use `VITE_AI_API_KEY` universally and override the endpoint/model with `VITE_AI_BASE_URL` / `VITE_AI_MODEL`. If `VITE_AI_PROVIDER` is omitted, the provider is inferred from whichever key is present.
+
+   > Note: changes to `.env` require **restarting the dev server**. A key entered in the browser takes priority over the `.env.local` one.
 
 4. Start the development server:
    ```bash

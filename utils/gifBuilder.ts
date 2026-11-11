@@ -1,6 +1,8 @@
 import { SpriteConfig, ImageDimensions } from "../types";
+import { buildBackgroundMask, despillEdge, mapEditSeeds, effectiveDespillStrength } from "./backgroundRemoval";
 
-// Define the GIF type from the library (loaded via CDN in index.html)
+// gif.js 是 UMD 脚本（挂到 window.GIF），不是 ES module，所以按需动态加载本地文件。
+// 之前从 cdnjs 拉，CDN 一挂导出就废；现在走 public/vendor/ 同源资源。
 declare class GIF {
   constructor(options: any);
   addFrame(element: any, options?: any): void;
@@ -8,15 +10,33 @@ declare class GIF {
   render(): void;
 }
 
-/**
- * Fetches the gif.worker.js code from CDN and creates a Blob URL.
- */
-const getWorkerBlobUrl = async () => {
-  const response = await fetch('https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js');
-  const text = await response.text();
-  const blob = new Blob([text], { type: 'application/javascript' });
-  return URL.createObjectURL(blob);
+/** 本地资源根路径，支持部署到子路径 */
+const BASE = (((import.meta as any).env?.BASE_URL as string) ?? '/');
+const vendorUrl = (file: string) => `${BASE}vendor/${file}`;
+
+let gifLibPromise: Promise<void> | null = null;
+
+/** 确保 gif.js 已加载（只会加载一次） */
+const ensureGifLib = (): Promise<void> => {
+  if ((window as any).GIF) return Promise.resolve();
+  if (!gifLibPromise) {
+    gifLibPromise = new Promise<void>((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = vendorUrl('gif.js');
+      el.async = true;
+      el.onload = () => resolve();
+      el.onerror = () => {
+        gifLibPromise = null;
+        reject(new Error('GIF 编码器加载失败，请检查网络后重试'));
+      };
+      document.head.appendChild(el);
+    });
+  }
+  return gifLibPromise;
 };
+
+/** worker 与页面同源，直接用路径，不需要再转 Blob */
+const getWorkerUrl = () => vendorUrl('gif.worker.js');
 
 export const hexToRgb = (hex: string) => {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -184,20 +204,31 @@ export const applyFloodFill = (
   }
 };
 
+/** 导出结果连同真实规格一起返回，文件名和完成反馈才不会靠猜 */
+export interface GifExportResult {
+  blob: Blob;
+  /** GIF 实际像素尺寸（已含缩放与 1024 限制） */
+  width: number;
+  height: number;
+  /** 实际写入的帧数（已扣除排除帧与超出序列长度的帧） */
+  frames: number;
+}
+
 export const generateGif = async (
   image: HTMLImageElement,
   config: SpriteConfig,
   dimensions: ImageDimensions,
   onProgress: (pct: number) => void
-): Promise<Blob> => {
-  const workerUrl = await getWorkerBlobUrl();
+): Promise<GifExportResult> => {
+  await ensureGifLib();
+  const workerUrl = getWorkerUrl();
 
-  return new Promise((resolve, reject) => {
+  return new Promise<GifExportResult>((resolve, reject) => {
     const { 
         rows, cols, crop, scale, fps, totalFrames, excludedFrames,
-        transparent, tolerance = 0, useFloodFill = true, 
+        transparent, tolerance = 0, useFloodFill = true, alphaRatio = true, despillStrength = 80,
         readOrder = 'row-major', autoAlign = false, alignMode = 'center',
-        maxResolution1024 = false
+        editPoints = [], maxResolution1024 = false
     } = config;
     
     const frameWidthRaw = dimensions.width / cols;
@@ -331,9 +362,17 @@ export const generateGif = async (
     }
 
     // --- GIF SETUP ---
+    // quality 不是"质量分"，而是 NeuQuant 建调色板时的**像素采样间隔**：
+    //   setQuality(q) -> this.sample = q -> samplepixels = 总像素 / q
+    // 数字越大采样越稀、越快，但调色板越粗。实测（9 帧，透明，workers:2）：
+    //   340×340   q1 369ms/误差0.42   q3 142ms/0.63   q10 69ms/0.73
+    //   1024×1024 q1 3337ms/0.79      q3 1121ms/0.49  q10 414ms/0.84
+    // 注意 q1 在大图上并非最优（NeuQuant 学习率调度非单调），q2~q3 才是拐点，
+    // 故取 3：小图快 2.6 倍、大图快 3 倍且比 q1 更准。误透明/误不透明在
+    // 各档位均为 0，说明该参数不影响抠图干净度，只影响 256 色的分配。
     const gifOptions: any = {
       workers: 2,
-      quality: 1,
+      quality: 3,
       dither: false,
       width: outputWidth,
       height: outputHeight,
@@ -388,6 +427,18 @@ export const generateGif = async (
             bufferCtx.fillRect(0, 0, logicalWidth, logicalHeight);
         }
 
+        // 这一帧实际被画到了缓冲区的哪个矩形（对齐 / 未对齐不同，编辑点要跟着走）
+        let drawn = {
+            srcX: (c * frameWidthRaw) + crop.left,
+            srcY: (r * frameHeightRaw) + crop.top,
+            srcW: cropWidth,
+            srcH: cropHeight,
+            dstX: 0,
+            dstY: 0,
+            dstW: logicalWidth,
+            dstH: logicalHeight,
+        };
+
         if (autoAlign) {
             const bbox = frameBBoxes.get(originalIndex);
             
@@ -417,6 +468,17 @@ export const generateGif = async (
                     scaledBboxW, 
                     scaledBboxH
                 );
+
+                drawn = {
+                    srcX: (c * frameWidthRaw) + crop.left + bbox.minX,
+                    srcY: (r * frameHeightRaw) + crop.top + bbox.minY,
+                    srcW: bbox.width,
+                    srcH: bbox.height,
+                    dstX: destX,
+                    dstY: destY,
+                    dstW: scaledBboxW,
+                    dstH: scaledBboxH,
+                };
             }
         } else {
             // Standard render (no align)
@@ -433,30 +495,50 @@ export const generateGif = async (
             );
         }
 
-        // 2. Apply Transparency Processing (on Buffer)
-        // We process chroma key on the full resolution image for best edge detection
+        // 2. 抠背景：α 比例判定 + 去色溢出，与预览、PNG 导出共用同一套算法
         if (transparentRGB && keyColor) {
            const imgData = bufferCtx.getImageData(0, 0, logicalWidth, logicalHeight);
            const data = imgData.data;
 
-           if (useFloodFill) {
-             applyFloodFill(data, logicalWidth, logicalHeight, transparentRGB, keyColor, thresholdSq);
-           } else {
-             const tr = transparentRGB.r, tg = transparentRGB.g, tb = transparentRGB.b;
-             const kr = keyColor.r, kg = keyColor.g, kb = keyColor.b;
+           const mask = buildBackgroundMask(data, logicalWidth, logicalHeight, {
+             target: transparentRGB,
+             tolerance,
+             floodFill: useFloodFill,
+             alphaRatio,
+             edits: mapEditSeeds(
+               editPoints,
+               dimensions.width,
+               dimensions.height,
+               drawn.srcX,
+               drawn.srcY,
+               drawn.srcW,
+               drawn.srcH,
+               logicalWidth,
+               logicalHeight,
+               { x: drawn.dstX, y: drawn.dstY, w: drawn.dstW, h: drawn.dstH }
+             ),
+           });
 
-             for (let p = 0; p < data.length; p += 4) {
-                const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
-                if (a === 0) {
-                     data[p] = kr; data[p+1] = kg; data[p+2] = kb; data[p+3] = 255;
-                     continue;
-                }
-                const distSq = (r - tr)*(r - tr) + (g - tg)*(g - tg) + (b - tb)*(b - tb);
-                if (distSq <= thresholdSq) {
-                   data[p] = kr; data[p+1] = kg; data[p+2] = kb; data[p+3] = 255;
-                }
+           despillEdge(
+             data,
+             mask.alpha,
+             transparentRGB,
+             logicalWidth,
+             logicalHeight,
+             effectiveDespillStrength(alphaRatio, despillStrength)
+           );
+
+           // GIF 只有 1-bit alpha，用占位色标记透明区域
+           const kr = keyColor.r, kg = keyColor.g, kb = keyColor.b;
+           for (let p = 0, i = 0; p < mask.solid.length; p++, i += 4) {
+             if (!mask.solid[p]) {
+               data[i] = kr;
+               data[i + 1] = kg;
+               data[i + 2] = kb;
+               data[i + 3] = 255;
              }
            }
+
            bufferCtx.putImageData(imgData, 0, 0);
         }
 
@@ -482,8 +564,12 @@ export const generateGif = async (
     });
 
     gif.on('finished', (blob: Blob) => {
-      resolve(blob);
-      URL.revokeObjectURL(workerUrl);
+      resolve({
+        blob,
+        width: outputWidth,
+        height: outputHeight,
+        frames: validFrameCoordinates.length,
+      });
     });
 
     gif.render();

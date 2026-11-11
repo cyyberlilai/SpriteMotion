@@ -1,27 +1,32 @@
 import { SpriteConfig, ImageDimensions } from "../types";
-import { hexToRgb, getContentBoundingBox, applyFloodFill, BoundingBox } from './gifBuilder';
+import { hexToRgb, getContentBoundingBox, BoundingBox } from './gifBuilder';
+import { buildBackgroundMask, despillEdge, mapEditSeeds, effectiveDespillStrength } from './backgroundRemoval';
+import JSZip from 'jszip';
 
-declare var JSZip: any;
+/** 与 GIF 导出同结构：ZIP 名字和完成反馈也用真实规格 */
+export interface FramesExportResult {
+  blob: Blob;
+  /** 单帧 PNG 的实际像素尺寸 */
+  width: number;
+  height: number;
+  frames: number;
+}
 
 export const exportFrames = async (
   image: HTMLImageElement,
   config: SpriteConfig,
   dimensions: ImageDimensions,
   onProgress: (pct: number) => void
-): Promise<Blob> => {
-  return new Promise(async (resolve, reject) => {
+): Promise<FramesExportResult> => {
+  return new Promise<FramesExportResult>(async (resolve, reject) => {
     try {
-      if (typeof JSZip === 'undefined') {
-        throw new Error('JSZip library not loaded');
-      }
-
       const zip = new JSZip();
       
       const { 
           rows, cols, crop, scale, totalFrames, excludedFrames,
-          transparent, tolerance = 0, useFloodFill = true, 
+          transparent, tolerance = 0, useFloodFill = true, alphaRatio = true, despillStrength = 80,
           readOrder = 'row-major', autoAlign = false, alignMode = 'center',
-          maxResolution1024 = false
+          editPoints = [], maxResolution1024 = false
       } = config;
       
       const frameWidthRaw = dimensions.width / cols;
@@ -174,6 +179,18 @@ export const exportFrames = async (
               bufferCtx.fillRect(0, 0, logicalWidth, logicalHeight);
           }
 
+          // 这一帧实际被画到了缓冲区的哪个矩形（对齐 / 未对齐不同，编辑点要跟着走）
+          let drawn = {
+              srcX: (c * frameWidthRaw) + crop.left,
+              srcY: (r * frameHeightRaw) + crop.top,
+              srcW: cropWidth,
+              srcH: cropHeight,
+              dstX: 0,
+              dstY: 0,
+              dstW: logicalWidth,
+              dstH: logicalHeight,
+          };
+
           if (autoAlign) {
               const bbox = frameBBoxes.get(originalIndex);
               
@@ -199,6 +216,17 @@ export const exportFrames = async (
                       scaledBboxW, 
                       scaledBboxH
                   );
+
+                  drawn = {
+                      srcX: (c * frameWidthRaw) + crop.left + bbox.minX,
+                      srcY: (r * frameHeightRaw) + crop.top + bbox.minY,
+                      srcW: bbox.width,
+                      srcH: bbox.height,
+                      dstX: destX,
+                      dstY: destY,
+                      dstW: scaledBboxW,
+                      dstH: scaledBboxH,
+                  };
               }
           } else {
               bufferCtx.drawImage(
@@ -211,82 +239,43 @@ export const exportFrames = async (
               );
           }
 
-          // 2. Apply Transparency Processing
+          // 2. 抠背景：α 比例判定 + 去色溢出，与预览、GIF 导出共用同一套算法
           if (transparent && transparentRGB) {
              const imgData = bufferCtx.getImageData(0, 0, logicalWidth, logicalHeight);
-             const data = imgData.data;
 
-             if (useFloodFill) {
-                // For PNG export, we want real transparency (alpha=0), not a key color.
-                // We reuse applyFloodFill but logic needs to be slightly different:
-                // applyFloodFill in gifBuilder sets color to keyColor (e.g. green).
-                // Here we want to set alpha to 0.
-                
-                // Since applyFloodFill is hardcoded to set a key color, we have to modify it or 
-                // replicate logic. For cleanliness, we'll replicate the simple loop logic here 
-                // but optimized for alpha=0 channel.
-                
-                // Let's implement a specific alpha-erasing flood fill here to avoid modifying shared code
-                // too much or handling green-screen effects in PNG.
-                
-                const visited = new Uint8Array(logicalWidth * logicalHeight);
-                const queue: number[] = [];
-                const tr = transparentRGB.r, tg = transparentRGB.g, tb = transparentRGB.b;
+             const mask = buildBackgroundMask(imgData.data, logicalWidth, logicalHeight, {
+               target: transparentRGB,
+               tolerance,
+               floodFill: useFloodFill,
+               alphaRatio,
+               edits: mapEditSeeds(
+                 editPoints,
+                 dimensions.width,
+                 dimensions.height,
+                 drawn.srcX,
+                 drawn.srcY,
+                 drawn.srcW,
+                 drawn.srcH,
+                 logicalWidth,
+                 logicalHeight,
+                 { x: drawn.dstX, y: drawn.dstY, w: drawn.dstW, h: drawn.dstH }
+               ),
+             });
 
-                const matches = (idx: number) => {
-                  const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
-                  if (a === 0) return true;
-                  const distSq = (r - tr)*(r - tr) + (g - tg)*(g - tg) + (b - tb)*(b - tb);
-                  return distSq <= thresholdSq;
-                };
+             despillEdge(
+               imgData.data,
+               mask.alpha,
+               transparentRGB,
+               logicalWidth,
+               logicalHeight,
+               effectiveDespillStrength(alphaRatio, despillStrength)
+             );
 
-                const addSeed = (x: number, y: number) => {
-                  const idx = (y * logicalWidth + x) * 4;
-                  const vIdx = y * logicalWidth + x;
-                  if (!visited[vIdx] && matches(idx)) {
-                    visited[vIdx] = 1;
-                    queue.push(vIdx);
-                  }
-                };
-
-                // Seed edges
-                for (let x = 0; x < logicalWidth; x++) { addSeed(x, 0); addSeed(x, logicalHeight - 1); }
-                for (let y = 1; y < logicalHeight - 1; y++) { addSeed(0, y); addSeed(logicalWidth - 1, y); }
-
-                let head = 0;
-                while (head < queue.length) {
-                   const vIdx = queue[head++];
-                   const idx = vIdx * 4;
-                   data[idx + 3] = 0; // Set Alpha to 0
-
-                   const x = vIdx % logicalWidth;
-                   const y = Math.floor(vIdx / logicalWidth);
-                   
-                   const neighbors = [{nx:x+1,ny:y}, {nx:x-1,ny:y}, {nx:x,ny:y+1}, {nx:x,ny:y-1}];
-                   for (const {nx, ny} of neighbors) {
-                      if (nx>=0 && nx<logicalWidth && ny>=0 && ny<logicalHeight) {
-                         const nVIdx = ny * logicalWidth + nx;
-                         if (!visited[nVIdx]) {
-                             if (matches(nVIdx*4)) {
-                                 visited[nVIdx] = 1;
-                                 queue.push(nVIdx);
-                             }
-                         }
-                      }
-                   }
-                }
-             } else {
-               // Simple replacement
-               const tr = transparentRGB.r, tg = transparentRGB.g, tb = transparentRGB.b;
-               for (let p = 0; p < data.length; p += 4) {
-                  const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
-                  if (a === 0) continue;
-                  const distSq = (r - tr)*(r - tr) + (g - tg)*(g - tg) + (b - tb)*(b - tb);
-                  if (distSq <= thresholdSq) {
-                     data[p+3] = 0; // Alpha 0
-                  }
-               }
+             // PNG 支持 8-bit alpha，直接写软 alpha，边缘过渡更自然
+             for (let p = 0, i = 3; p < mask.alpha.length; p++, i += 4) {
+               imgData.data[i] = mask.alpha[p];
              }
+
              bufferCtx.putImageData(imgData, 0, 0);
           }
 
@@ -318,7 +307,12 @@ export const exportFrames = async (
       onProgress(95);
       const content = await zip.generateAsync({ type: "blob" });
       onProgress(100);
-      resolve(content);
+      resolve({
+        blob: content,
+        width: outputWidth,
+        height: outputHeight,
+        frames: validFrameCoordinates.length,
+      });
 
     } catch (e) {
       reject(e);
