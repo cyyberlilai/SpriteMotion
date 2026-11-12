@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Upload, Download, Sparkles, RefreshCw, Layers, Settings, Scissors, Palette, ShieldCheck, ShieldAlert, ArrowRight, ArrowDown, AlignCenter, ArrowDownToLine, Target, Maximize, Images, ChevronDown, AlertTriangle, Grid2x2, Blend, Eraser, Wand2, PaintBucket, X, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Upload, Download, Sparkles, RefreshCw, Layers, Settings, Scissors, Palette, ShieldCheck, ShieldAlert, ArrowRight, ArrowDown, AlignCenter, ArrowDownToLine, Target, Maximize, Images, ChevronDown, AlertTriangle, Grid2x2, Blend, Eraser, Wand2, PaintBucket, X, Check, CheckCircle2, RotateCcw } from 'lucide-react';
 import { SpriteConfig, ImageDimensions, ProcessingState, CropConfig } from './types';
 import { SpriteCanvas } from './components/SpriteCanvas';
 import { FrameZoomModal } from './components/FrameZoomModal';
@@ -920,15 +920,29 @@ const App: React.FC = () => {
             </a>
             <button
                 onClick={() => setShowAiSettings(true)}
+                // 强调色给「需要行动」的状态：没配置时金色（文字 + 细边），配好之后退回安静。
+                // 细边必须用 ! 前缀 —— .btn-glass 的 border 简写在 CSS 里晚于工具类，会盖掉 border-color。
                 className={`btn-glass lift flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12.5px] font-medium ${
                   aiResolved.hasKey
-                    ? 'text-indigo-300 border-indigo-400/40'
-                    : 'text-slate-200'
+                    ? 'text-slate-200'
+                    : 'text-indigo-300 !border-indigo-400/50'
                 }`}
-                title={aiResolved.hasKey ? `已保存 API 配置（${aiResolved.providerLabel}）` : '填写 API Key 以启用自动识别'}
+                // 状态直接写在按钮上，不再用 title 悬停提示：
+                // 原生 tooltip 只在桌面端、还要悬停一秒才出现，触屏根本看不到。
+                aria-label={
+                  aiResolved.hasKey
+                    ? `API 已配置（${aiResolved.providerLabel}），点击修改`
+                    : 'API 未配置，点击填写 API Key'
+                }
             >
-                <Settings size={13} className={aiResolved.hasKey ? 'text-indigo-300' : 'text-slate-400'} />
-                <span>API 配置</span>
+                {aiResolved.hasKey ? (
+                  // 加粗更醒目。颜色取「恢复」按钮上那一档绿（success-500，即它的描边色）：
+                  // 实底那档 success-600 放到 14px 线条上会发黑，读起来像一个灰点。
+                  <Check size={14} strokeWidth={4} className="text-emerald-500" />
+                ) : (
+                  <Settings size={13} className="text-indigo-300" />
+                )}
+                <span>{aiResolved.hasKey ? 'API 已配置' : 'API 未配置'}</span>
             </button>
           </div>
         </div>
