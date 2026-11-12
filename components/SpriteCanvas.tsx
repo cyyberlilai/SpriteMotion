@@ -293,7 +293,7 @@ export const SpriteCanvas: React.FC<SpriteCanvasProps> = ({
     [onFileDrop, onDropRejected, onDismissDropError]
   );
 
-  // 投放失败时，说明卡片就压在用户刚松手的地方：原因、支持格式、下一步动作都在手边
+  // 投放失败时，说明卡片就压在用户刚松手的地方：一句原因 + 一个下一步动作
   const renderDropError = () => {
     if (!dropError) return null;
     return (
@@ -315,10 +315,9 @@ export const SpriteCanvas: React.FC<SpriteCanvasProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-semibold text-white">这张图片没能导入</div>
+              {/* 这里不再重复格式列表：标题和原因已经说清问题，下一步按钮直接带他去选图，
+                  关掉卡片后投放区里那行常驻格式也立刻回到视野。 */}
               <p className="text-[12px] leading-relaxed text-slate-300 mt-1 break-words">{dropError}</p>
-              <div className="text-[11px] leading-relaxed text-slate-400 mt-2">
-                支持 {SUPPORTED_FORMATS_LABEL}
-              </div>
             </div>
             <button
               type="button"

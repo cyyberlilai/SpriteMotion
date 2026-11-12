@@ -22,6 +22,66 @@ export {
 };
 export type { AiProvider, UserAiConfig };
 
+/**
+ * 识别失败的原因分类。
+ *
+ * 分那么细不是为了给用户看错误码，而是为了让界面能给**正确的下一步**：
+ * 429 该等一等、断网该重试、Key 无效才该去改配置。
+ * 全都归成一个「打开 API 配置」，用户就会白跑。
+ */
+export type AiErrorKind =
+  | 'auth' // 401 / 403：Key 无效或没权限
+  | 'notfound' // 404：模型名或接口地址不存在
+  | 'quota' // 429：频率或额度
+  | 'network' // 请求根本没发出去：断网、代理、跨域拦截
+  | 'server' // 5xx / 400 / 其它：服务端或参数问题
+  | 'format' // 返回内容不是可解析的 JSON
+  | 'invalid-result' // 解析成功但没有有效的行列数
+  | 'incomplete'; // 本地配置不完整（缺 Key / 缺地址或模型）
+
+/** 带分类的错误：message 是给人看的一句话，raw 是给「查看详情」的原文 */
+export class AiError extends Error {
+  kind: AiErrorKind;
+  status?: number;
+  raw?: string;
+
+  constructor(kind: AiErrorKind, message: string, opts?: { status?: number; raw?: string }) {
+    super(message);
+    this.name = 'AiError';
+    this.kind = kind;
+    this.status = opts?.status;
+    this.raw = opts?.raw;
+  }
+}
+
+/** 不依赖 instanceof（ES5 target 下原型链会断），按字段判断即可 */
+export const isAiError = (e: unknown): e is AiError =>
+  !!e && typeof e === 'object' && typeof (e as { kind?: unknown }).kind === 'string';
+
+const kindOfStatus = (status: number): AiErrorKind => {
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 404) return 'notfound';
+  if (status === 429) return 'quota';
+  return 'server';
+};
+
+/** 从服务商返回体里挖一句人话，挖不到就用原始文本 */
+const extractProviderMessage = (raw: string): string => {
+  try {
+    const parsed = JSON.parse(raw);
+    const msg =
+      parsed?.error?.message ??
+      parsed?.error?.status ??
+      parsed?.message ??
+      parsed?.detail ??
+      null;
+    if (typeof msg === 'string' && msg.trim()) return msg.trim();
+  } catch {
+    /* 不是 JSON，直接用原文 */
+  }
+  return raw.trim();
+};
+
 const PROMPT = `Analyze this sprite sheet image. It contains a sequence of animation frames arranged in a grid.
 Count the number of rows and columns.
 Also estimate the total number of valid frames (sometimes the last row is not full).
@@ -77,12 +137,14 @@ export const analyzeSpriteSheet = async (
 
   if (!resolved.isComplete) {
     if (!resolved.hasKey) {
-      throw new Error(
-        `请先填写 ${resolved.providerLabel} 的 API Key，点击右上角「AI 设置」按钮。`
+      throw new AiError(
+        'incomplete',
+        `还没有填写 ${resolved.providerLabel} 的 API Key`
       );
     }
-    throw new Error(
-      `接口地址或模型名不完整，请在「AI 设置」中补全 ${resolved.providerLabel} 的配置。`
+    throw new AiError(
+      'incomplete',
+      '接口地址或模型名为空，配置还不完整'
     );
   }
 
@@ -124,7 +186,19 @@ export const analyzeSpriteSheet = async (
         body: JSON.stringify(buildBody(useJsonMode)),
       });
 
-    let response = await sendRequest(resolved.jsonMode);
+    // fetch 自己抛错 = 请求压根没发出去（断网 / 代理 / 跨域），
+    // 这类错误原文是 "Failed to fetch"，对用户毫无意义，必须翻译。
+    const send = async (useJsonMode: boolean) => {
+      try {
+        return await sendRequest(useJsonMode);
+      } catch (err) {
+        throw new AiError('network', '连不上接口，请求没有发出去', {
+          raw: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        });
+      }
+    };
+
+    let response = await send(resolved.jsonMode);
 
     // 自动降级：某些端点不认 response_format，会回 400/422。
     // 这种时候不打扰用户，直接用严格提示词重试一次。
@@ -135,42 +209,60 @@ export const analyzeSpriteSheet = async (
       );
       if (looksLikeFormatIssue) {
         console.warn("端点不支持 response_format，自动降级重试", firstError.slice(0, 120));
-        response = await sendRequest(false);
+        response = await send(false);
       } else {
-        throw new Error(
-          `${resolved.providerLabel} 接口返回 ${response.status}：${
-            firstError.slice(0, 200) || response.statusText
-          }`
+        throw new AiError(
+          kindOfStatus(response.status),
+          `${resolved.providerLabel} 拒绝了这次请求（${response.status}）`,
+          { status: response.status, raw: extractProviderMessage(firstError) }
         );
       }
     }
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      throw new Error(
-        `${resolved.providerLabel} 接口返回 ${response.status}：${
-          detail.slice(0, 200) || response.statusText
-        }`
+      throw new AiError(
+        kindOfStatus(response.status),
+        `${resolved.providerLabel} 返回 ${response.status}`,
+        { status: response.status, raw: extractProviderMessage(detail) || response.statusText }
       );
     }
 
-    const payload = await response.json();
+    const payload = await response.json().catch(() => null);
     const content = payload?.choices?.[0]?.message?.content;
 
     if (!content) {
-      throw new Error(`${resolved.providerLabel} 没有返回内容`);
+      throw new AiError(
+        'format',
+        `${resolved.providerLabel} 没有返回任何内容`,
+        { raw: JSON.stringify(payload ?? {}).slice(0, 400) }
+      );
     }
 
-    const data = parseJsonLoose(
-      typeof content === "string" ? content : JSON.stringify(content)
-    );
+    const contentText = typeof content === "string" ? content : JSON.stringify(content);
+    let data: any;
+    try {
+      data = parseJsonLoose(contentText);
+    } catch {
+      throw new AiError('format', '模型返回的内容不是合法 JSON', {
+        raw: contentText.slice(0, 400),
+      });
+    }
+
+    if (!data || typeof data !== 'object') {
+      throw new AiError('format', '模型返回的内容里没有 JSON', {
+        raw: contentText.slice(0, 400),
+      });
+    }
 
     const rows = Number(data.rows);
     const cols = Number(data.cols);
     const totalFrames = Number(data.totalFrames);
 
     if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows < 1 || cols < 1) {
-      throw new Error("识别结果异常：行数或列数无效");
+      throw new AiError('invalid-result', '没能从这张图里认出网格', {
+        raw: contentText.slice(0, 400),
+      });
     }
 
     return {
@@ -183,6 +275,11 @@ export const analyzeSpriteSheet = async (
     };
   } catch (error) {
     console.error(`${resolved.providerLabel} Analysis Error:`, error);
-    throw error;
+    if (isAiError(error)) throw error;
+    // 兜底：任何没被分类的异常都包一层，界面才能统一渲染，
+    // 也不会把 "TypeError: xxx is not a function" 这种东西直接丢给用户。
+    throw new AiError('server', '识别过程中出现了意外错误', {
+      raw: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
   }
 };

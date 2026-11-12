@@ -54,6 +54,12 @@ export interface ImageDimensions {
 export interface ProcessingState {
   status: 'idle' | 'analyzing' | 'rendering' | 'completed';
   progress: number; // 0 to 100
+  /**
+   * 正在生成的是哪一种导出。
+   * 两个按钮共用一套状态，没有这个字段就分不清谁在跑 ——
+   * 导出 ZIP 时「导出 GIF」会错显成「生成中」。
+   */
+  renderingKind?: 'gif' | 'zip';
   /** 刚完成的是哪一种导出，用于让对应按钮短暂显示「已导出」 */
   completedKind?: 'gif' | 'zip';
   // 错误信息不再放这里：一律交给「就近反馈」（scopedError / toast），

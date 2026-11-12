@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Upload, Download, Sparkles, RefreshCw, Layers, Settings, Scissors, Palette, ShieldCheck, ShieldAlert, ArrowRight, ArrowDown, AlignCenter, ArrowDownToLine, Target, Maximize, Images, ChevronDown, AlertTriangle, Grid2x2, Blend, Eraser, Wand2, PaintBucket, Info, X, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Upload, Download, Sparkles, RefreshCw, Layers, Settings, Scissors, Palette, ShieldCheck, ShieldAlert, ArrowRight, ArrowDown, AlignCenter, ArrowDownToLine, Target, Maximize, Images, ChevronDown, AlertTriangle, Grid2x2, Blend, Eraser, Wand2, PaintBucket, X, CheckCircle2, RotateCcw } from 'lucide-react';
 import { SpriteConfig, ImageDimensions, ProcessingState, CropConfig } from './types';
 import { SpriteCanvas } from './components/SpriteCanvas';
 import { FrameZoomModal } from './components/FrameZoomModal';
 import { PreviewPlayer } from './components/PreviewPlayer';
 import { AiSettingsModal } from './components/AiSettingsModal';
-import { analyzeSpriteSheet, loadUserConfig, saveUserConfig, clearUserConfig, resolveAiConfig } from './services/aiService';
+import { analyzeSpriteSheet, loadUserConfig, saveUserConfig, clearUserConfig, resolveAiConfig, isAiError } from './services/aiService';
+import type { AiErrorKind } from './services/aiService';
 import type { UserAiConfig } from './services/aiConfig';
 import { generateGif, hexToRgb } from './utils/gifBuilder';
 import { exportFrames } from './utils/frameExporter';
 import {
   readImageFile,
   pickImageFile,
-  SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_FORMATS_LABEL,
   buildExportFileName,
   formatFileSize,
@@ -73,15 +73,222 @@ interface InfoToast {
 
 /**
  * 就近错误：锚点决定它挂在哪个控件下面。
- *   upload / analyze = 工具栏里对应按钮正下方，drop = 投放区中央。
- * 导出类错误不在这里，走 toast（停在导出栏上方）。
+ *   upload = 上传按钮正下方，drop = 投放区中央。
+ * 自动识别失败不走这里 —— 它用 AnalyzeStatusBar（行内状态条、按错误类型给不同按钮）；
+ * 导出类错误走导出栏里的状态条。
  */
 interface ScopedError {
   message: string;
-  anchor: 'upload' | 'analyze' | 'drop';
+  anchor: 'upload' | 'drop';
   hint?: string;
   action?: { label: string; onClick: () => void };
 }
+
+/**
+ * 自动识别的失败反馈：走工具栏下方的行内状态条，不再用浮层卡片。
+ *
+ * 三层信息，缺一不可：
+ *   title —— 发生了什么（一句人话）
+ *   hint  —— 为什么会这样 / 可以怎么办
+ *   raw   —— 服务商原文，默认折叠，只有想深究的人才展开
+ * 另外 pending=true 表示「正在按当前设置重试」，此时只转圈不给按钮。
+ */
+interface AnalyzeFailure {
+  kind: AiErrorKind;
+  title: string;
+  hint: string;
+  raw?: string;
+  status?: number;
+  pending?: boolean;
+}
+
+/**
+ * 错误分类 → 给用户看的话。
+ * 标题里带状态码，是为了让用户报障时能直接说出来；也能对上服务商的文档。
+ */
+const AI_ERROR_COPY: Record<AiErrorKind, { title: string; hint: string }> = {
+  auth: {
+    title: 'API Key 无效，暂时无法识别',
+    hint: '密钥可能填错、已过期或被撤销。重新配置后可直接重试。',
+  },
+  notfound: {
+    title: '接口地址或模型不存在',
+    hint: '检查「API 配置」里的地址与模型名，是否和所选服务商匹配。',
+  },
+  quota: {
+    title: '请求太频繁，或额度已用完',
+    hint: '等一分钟再试；持续失败就检查账号额度，或换一个 Key。',
+  },
+  network: {
+    title: '连不上接口，请求没有发出去',
+    hint: '可能是网络中断、代理拦截，或该地址不允许浏览器直连。',
+  },
+  server: {
+    title: '服务端没有正常响应',
+    hint: '可以重试一次；若一直失败，多半是模型名不被这个端点支持。',
+  },
+  format: {
+    title: '模型返回的内容解析不了',
+    hint: '有些端点不支持 JSON 模式，关掉它再试通常就好了。',
+  },
+  'invalid-result': {
+    title: '没能从这张图里认出网格',
+    hint: '换一张主体更完整的图，或在下方「分帧」里直接填行列数。',
+  },
+  incomplete: {
+    title: 'API 配置还不完整',
+    hint: '缺少 Key、接口地址或模型名，补全之后才能识别。',
+  },
+};
+
+/** 把任意异常翻译成一条可渲染的失败状态 */
+const describeAnalyzeError = (err: unknown): AnalyzeFailure => {
+  if (isAiError(err)) {
+    const copy = AI_ERROR_COPY[err.kind] ?? AI_ERROR_COPY.server;
+    return {
+      kind: err.kind,
+      title: err.status ? `${copy.title}（${err.status}）` : copy.title,
+      hint: copy.hint,
+      raw: err.raw,
+      status: err.status,
+    };
+  }
+  return {
+    kind: 'server',
+    ...AI_ERROR_COPY.server,
+    raw: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+  };
+};
+
+/**
+ * 识别失败状态条：在文档流里（不是浮层），所以永远不会盖住画布，
+ * 白底图片上也不会出现「白字压白底」。高度约 64px，展开详情时再多一截。
+ */
+const AnalyzeStatusBar: React.FC<{
+  failure: AnalyzeFailure;
+  onRetry: () => void;
+  onOpenConfig: () => void;
+  onDisableJsonMode: () => void;
+  onManualFrames: () => void;
+  onClose: () => void;
+}> = ({ failure, onRetry, onOpenConfig, onDisableJsonMode, onManualFrames, onClose }) => {
+  const [expanded, setExpanded] = useState(false);
+  // 换一条错误就收起详情，避免上一条的原文串到下一条上
+  useEffect(() => setExpanded(false), [failure.title, failure.raw]);
+
+  const warn =
+    failure.kind === 'quota' ||
+    failure.kind === 'network' ||
+    failure.kind === 'format' ||
+    failure.kind === 'invalid-result';
+
+  const tone = failure.pending
+    ? 'border-slate-700 bg-slate-900/60'
+    : warn
+    ? 'border-warning-400/30 bg-warning-400/[0.07]'
+    : 'border-rose-400/30 bg-rose-500/[0.07]';
+
+  const titleColor = failure.pending ? 'text-slate-200' : warn ? 'text-warning-300' : 'text-rose-100';
+
+  // 主操作永远跟着原因走：配置类才去改配置，其余先重试
+  const configIssue =
+    failure.kind === 'auth' || failure.kind === 'notfound' || failure.kind === 'incomplete';
+
+  const actionBtn =
+    'px-2.5 py-1 min-h-[28px] rounded-md text-[11.5px] font-medium transition-colors duration-150';
+  const primaryBtn = `${actionBtn} btn-accent`;
+  const secondaryBtn = `${actionBtn} btn-glass text-slate-200 hover:text-white`;
+
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      className={`shrink-0 rounded-lg border px-3 py-2.5 ${tone}`}
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="shrink-0 mt-[2px]">
+          {failure.pending ? (
+            <RefreshCw size={14} className="animate-spin text-slate-300" />
+          ) : (
+            <AlertTriangle size={14} className={warn ? 'text-warning-300' : 'text-rose-300'} />
+          )}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className={`text-[12.5px] font-semibold ${titleColor}`}>{failure.title}</div>
+          <div className="mt-0.5 text-[11.5px] leading-relaxed text-slate-400">{failure.hint}</div>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-1.5">
+          {!failure.pending && (
+            <>
+              {!configIssue && (
+                <button type="button" onClick={onRetry} className={primaryBtn}>
+                  重试
+                </button>
+              )}
+              {configIssue && (
+                <>
+                  <button type="button" onClick={onRetry} className={secondaryBtn}>
+                    重试
+                  </button>
+                  <button type="button" onClick={onOpenConfig} className={primaryBtn}>
+                    重新配置
+                  </button>
+                </>
+              )}
+              {failure.kind === 'network' && (
+                <button type="button" onClick={onOpenConfig} className={secondaryBtn}>
+                  检查配置
+                </button>
+              )}
+              {failure.kind === 'server' && (
+                <button type="button" onClick={onOpenConfig} className={secondaryBtn}>
+                  检查配置
+                </button>
+              )}
+              {failure.kind === 'format' && (
+                <button type="button" onClick={onDisableJsonMode} className={secondaryBtn}>
+                  关闭 JSON 模式并重试
+                </button>
+              )}
+              {failure.kind === 'invalid-result' && (
+                <button type="button" onClick={onManualFrames} className={secondaryBtn}>
+                  手动填行列
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1 -mr-1 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors duration-150"
+                aria-label="关闭提示"
+              >
+                <X size={13} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {failure.raw && !failure.pending && (
+        <div className="mt-1.5 pl-[22px]">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors duration-150"
+          >
+            {expanded ? '收起详情 ▴' : '查看详情 ▾'}
+          </button>
+          {expanded && (
+            <pre className="mt-1.5 max-h-24 overflow-auto rounded-md border border-white/[0.07] bg-black/30 p-2 text-[10.5px] leading-relaxed font-mono text-slate-400 whitespace-pre-wrap break-all">
+              {failure.raw}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 interface NumberInputProps {
   label: string;
@@ -200,6 +407,8 @@ const App: React.FC = () => {
   const [sourceName, setSourceName] = useState('sprite');
   // 就近错误：只出现在触发它的控件旁边（工具栏按钮下 / 投放区里）
   const [scopedError, setScopedError] = useState<ScopedError | null>(null);
+  // 自动识别失败：单独一条行内状态条（文档流内，不压画布）
+  const [analyzeFailure, setAnalyzeFailure] = useState<AnalyzeFailure | null>(null);
   // 参数重置 / 撤销：与导出无关的轻量提示，仍是浮层卡片
   const [toast, setToast] = useState<InfoToast | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -240,6 +449,10 @@ const App: React.FC = () => {
   }, [eraseMode, zoomFrame]);
 
   const aiResolved = resolveAiConfig(aiConfig);
+  // 两个导出按钮共用一套 processingState，必须靠 renderingKind 区分谁在跑，
+  // 否则导出 ZIP 时「导出 GIF」也会显示「生成中」。
+  const gifRendering = processingState.status === 'rendering' && processingState.renderingKind === 'gif';
+  const zipRendering = processingState.status === 'rendering' && processingState.renderingKind === 'zip';
   const hasCrop =
     config.crop.top > 0 || config.crop.bottom > 0 ||
     config.crop.left > 0 || config.crop.right > 0;
@@ -391,6 +604,8 @@ const App: React.FC = () => {
       setImageUrl(dataUrl);
       setSourceName(file.name);
       dismissScopedError();
+      // 换了图，上一条识别失败的原因就过期了，一起清掉
+      setAnalyzeFailure(null);
       setProcessingState({ status: 'idle', progress: 0 });
       setConfig(createInitialConfig());
       setZoomFrame(null);
@@ -451,19 +666,36 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const handleAutoDetect = async () => {
+  /**
+   * @param override 临时覆盖配置（例如「关闭 JSON 模式并重试」），不写回本地存储
+   * @param fromRetry 从状态条上的「重试」进来：先显示「正在重新识别」，不要清空状态条
+   */
+  const handleAutoDetect = async (
+    override?: Partial<UserAiConfig>,
+    fromRetry = false
+  ) => {
     if (!imageUrl) return;
 
+    const effectiveConfig = override ? { ...aiConfig, ...override } : aiConfig;
+
     // 没配置 Key 时，直接弹出设置面板，不用让用户先读报错
-    if (!aiResolved.hasKey) {
+    if (!effectiveConfig.apiKey.trim()) {
       setShowAiSettings(true);
       return;
     }
 
     dismissScopedError();
+    if (fromRetry) {
+      // 保留状态条并换成 pending：否则「点重试 → 什么都不变」又会出现
+      setAnalyzeFailure((prev) =>
+        prev ? { ...prev, pending: true, title: '正在重新识别…', hint: '按当前配置重新请求一次' } : prev
+      );
+    } else {
+      setAnalyzeFailure(null);
+    }
     setProcessingState({ status: 'analyzing', progress: 0 });
     try {
-      const result = await analyzeSpriteSheet(imageUrl, aiConfig);
+      const result = await analyzeSpriteSheet(imageUrl, effectiveConfig);
       setConfig(prev => ({
         ...prev,
         rows: result.rows ?? prev.rows,
@@ -471,31 +703,28 @@ const App: React.FC = () => {
         totalFrames: result.totalFrames ?? ((result.rows || prev.rows) * (result.cols || prev.cols))
       }));
       setProcessingState({ status: 'idle', progress: 0 });
+      setAnalyzeFailure(null);
     } catch (error) {
       console.error("Detection failed", error);
-      const msg = error instanceof Error ? error.message : 'AI 识别失败，请手动设置。';
       setProcessingState({ status: 'idle', progress: 0 });
-      // 错误贴在「自动识别」按钮下方：眼睛不用从工具栏移到画布底部
-      showScopedError({
-        message: msg,
-        anchor: 'analyze',
-        hint: '也可以在下方「分帧」里手动填写行数与列数。',
-        action: {
-          label: '打开 AI 设置',
-          onClick: () => {
-            dismissScopedError();
-            setShowAiSettings(true);
-          },
-        },
-      });
+      // 错误类型决定按钮：配置类才引导去改配置，其余先重试
+      setAnalyzeFailure(describeAnalyzeError(error));
     }
+  };
+
+  /** 关掉 JSON 模式再试一次：这是「返回解析不了」最常见的解法 */
+  const handleDisableJsonModeAndRetry = () => {
+    const next = { ...aiConfig, jsonMode: false };
+    setAiConfig(next);
+    saveUserConfig(next);
+    void handleAutoDetect({ jsonMode: false }, true);
   };
 
   const handleExportGif = async (fromRetry = false) => {
     if (!imageUrl) return;
     // 从「重试」进来时保留那条「正在重新导出…」，不要先清掉再重画
     if (!fromRetry) dismissNotice();
-    setProcessingState({ status: 'rendering', progress: 0 });
+    setProcessingState({ status: 'rendering', progress: 0, renderingKind: 'gif' });
 
     try {
       const img = new Image();
@@ -552,7 +781,7 @@ const App: React.FC = () => {
   const handleExportFrames = async (fromRetry = false) => {
     if (!imageUrl) return;
     if (!fromRetry) dismissNotice();
-    setProcessingState({ status: 'rendering', progress: 0 });
+    setProcessingState({ status: 'rendering', progress: 0, renderingKind: 'zip' });
 
     try {
       const img = new Image();
@@ -696,10 +925,10 @@ const App: React.FC = () => {
                     ? 'text-indigo-300 border-indigo-400/40'
                     : 'text-slate-200'
                 }`}
-                title={aiResolved.hasKey ? `${aiResolved.providerLabel} 已配置` : '设置 API Key 以启用自动识别'}
+                title={aiResolved.hasKey ? `已保存 API 配置（${aiResolved.providerLabel}）` : '填写 API Key 以启用自动识别'}
             >
                 <Settings size={13} className={aiResolved.hasKey ? 'text-indigo-300' : 'text-slate-400'} />
-                <span>{aiResolved.hasKey ? aiResolved.providerLabel : 'AI 设置'}</span>
+                <span>API 配置</span>
             </button>
           </div>
         </div>
@@ -710,51 +939,21 @@ const App: React.FC = () => {
           {/* z-30：格式浮层和错误提示要压在下方画布之上（玻璃会生成独立层叠上下文） */}
           <div className="relative z-30 flex items-center justify-between px-3 py-2.5 rounded-lg glass">
             <div className="flex items-center space-x-2">
-                <div className="relative group/upload">
+                <div className="relative">
                     <label className="flex items-center space-x-2 cursor-pointer btn-accent lift px-4 py-2 rounded-md text-[14px] font-medium focus-within:ring-2 focus-within:ring-indigo-300 focus-within:ring-offset-2 focus-within:ring-offset-slate-900">
                         <Upload size={16} />
                         <span>上传图片</span>
-                        <Info size={13} className="opacity-60" aria-hidden="true" />
                         <input
                             ref={fileInputRef}
                             type="file"
                             accept="image/*"
                             onChange={handleFileChange}
-                            aria-describedby="upload-format-hint"
                             className="sr-only"
                         />
                     </label>
 
-                    {/* 格式说明贴在按钮正下方：鼠标靠近、或键盘 Tab 聚焦时出现。
-                        有就近错误时让位 —— 错误卡片已经占了同样的位置 */}
-                    {!scopedError && (
-                      <div
-                        id="upload-format-hint"
-                        role="tooltip"
-                        className="pointer-events-none absolute left-0 top-full mt-2 z-40 w-[292px] rounded-xl glass-pill p-3.5 opacity-0 invisible -translate-y-1 transition-all duration-200 group-hover/upload:opacity-100 group-hover/upload:visible group-hover/upload:translate-y-0 group-focus-within/upload:opacity-100 group-focus-within/upload:visible group-focus-within/upload:translate-y-0"
-                      >
-                        <div className="flex items-center gap-2 text-[12.5px] font-semibold text-white">
-                          <Info size={14} className="text-indigo-300" />
-                          <span>支持的图片格式</span>
-                        </div>
-                        <div className="mt-2.5 flex flex-wrap gap-1.5">
-                          {SUPPORTED_IMAGE_FORMATS.map((f) => (
-                            <span
-                              key={f.label}
-                              className="px-1.5 py-0.5 rounded bg-white/[0.08] border border-white/[0.10] text-[11px] font-mono text-slate-200"
-                            >
-                              {f.label}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="mt-2.5 text-[11px] leading-relaxed text-slate-400">
-                          其它浏览器可识别的图片格式也可导入
-                        </div>
-                        <div className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                          也可拖入画布，或按 ⌘ / Ctrl + V 粘贴
-                        </div>
-                      </div>
-                    )}
+                    {/* 格式说明不再做成悬停浮层：空态投放区里本来就常驻一行完整列表，
+                        而浮层压在图片上时会变成白字白底（白底素材）。 */}
                     {scopedError?.anchor === 'upload' && (
                       <InlineError
                         message={scopedError.message}
@@ -765,9 +964,8 @@ const App: React.FC = () => {
                     )}
                 </div>
 
-                <div className="relative">
                 <button
-                    onClick={handleAutoDetect}
+                    onClick={() => handleAutoDetect()}
                     disabled={!imageUrl || processingState.status === 'analyzing'}
                     className={`flex items-center space-x-2 px-4 py-2 rounded-md text-[14px] font-medium transition-colors duration-150 border ${
                       !imageUrl
@@ -778,15 +976,6 @@ const App: React.FC = () => {
                     {processingState.status === 'analyzing' ? <RefreshCw className="animate-spin" size={16} /> : <Sparkles size={16} />}
                     <span>自动识别</span>
                 </button>
-                    {scopedError?.anchor === 'analyze' && (
-                      <InlineError
-                        message={scopedError.message}
-                        hint={scopedError.hint}
-                        action={scopedError.action}
-                        onClose={dismissScopedError}
-                      />
-                    )}
-                </div>
             </div>
             {imageUrl && (
               <div className="flex items-center gap-2">
@@ -821,6 +1010,25 @@ const App: React.FC = () => {
             )}
 
           </div>
+
+          {/* 识别失败：行内状态条，夹在工具栏和画布之间。
+              放在文档流里，所以永远不会盖住画布，白底图也不会变成白字白底。 */}
+          {analyzeFailure && (
+            <AnalyzeStatusBar
+              failure={analyzeFailure}
+              onRetry={() => void handleAutoDetect(undefined, true)}
+              onOpenConfig={() => {
+                setAnalyzeFailure(null);
+                setShowAiSettings(true);
+              }}
+              onDisableJsonMode={handleDisableJsonModeAndRetry}
+              onManualFrames={() => {
+                setAnalyzeFailure(null);
+                setShowGrid(true);
+              }}
+              onClose={() => setAnalyzeFailure(null)}
+            />
+          )}
 
           <div className="relative flex-1 lg:min-h-0 bg-slate-900/40 rounded-lg border border-slate-800 p-1 flex flex-col h-[60vh] lg:h-auto min-h-[320px]">
              <SpriteCanvas
@@ -1492,12 +1700,14 @@ const App: React.FC = () => {
                     className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-md font-semibold text-[16px] transition-colors duration-150 active:scale-[0.99]
                     ${!imageUrl
                   ? 'bg-white/[0.04] text-slate-600 cursor-not-allowed border border-white/[0.06]'
-                        : processingState.status === 'rendering'
+                        : gifRendering
                   ? 'btn-accent opacity-70 cursor-wait'
+                        : zipRendering
+                  ? 'btn-accent opacity-40 cursor-not-allowed'
                   : 'btn-accent lift'
                     }`}
                 >
-                    {processingState.status === 'rendering' ? (
+                    {gifRendering ? (
                         <>
                             <RefreshCw className="animate-spin" size={18} />
                             <span className="tnum">生成中 {processingState.progress}%</span>
@@ -1521,15 +1731,29 @@ const App: React.FC = () => {
                     className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-md font-semibold text-[16px] transition-colors duration-150 active:scale-[0.99]
                     ${!imageUrl
                         ? 'bg-white/[0.04] text-slate-600 border border-white/[0.06] cursor-not-allowed'
-                        : processingState.status === 'rendering'
-                           ? 'btn-glass opacity-60 text-slate-400 cursor-wait'
+                        : zipRendering
+                           ? 'btn-glass opacity-60 text-slate-300 cursor-wait'
+                           : gifRendering
+                           ? 'btn-glass opacity-40 text-slate-500 cursor-not-allowed'
                            : 'btn-glass lift text-slate-200'
                     }`}
                 >
-                     {processingState.status === 'completed' && processingState.completedKind === 'zip'
-                       ? <CheckCircle2 size={18} />
-                       : <Images size={18} />}
-                     <span>{processingState.status === 'completed' && processingState.completedKind === 'zip' ? '已打包' : '导出每一帧 (ZIP)'}</span>
+                     {zipRendering ? (
+                       <>
+                         <RefreshCw className="animate-spin" size={18} />
+                         <span className="tnum">打包中 {processingState.progress}%</span>
+                       </>
+                     ) : processingState.status === 'completed' && processingState.completedKind === 'zip' ? (
+                       <>
+                         <CheckCircle2 size={18} />
+                         <span>已打包</span>
+                       </>
+                     ) : (
+                       <>
+                         <Images size={18} />
+                         <span>导出每一帧 (ZIP)</span>
+                       </>
+                     )}
                 </button>
             </div>
           </div>
